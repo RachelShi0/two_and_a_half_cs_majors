@@ -36,6 +36,38 @@ def load_county_data(path):
 
     # Convert date to datetime format
     counties_df['date'] = pd.to_datetime(counties_df['date'])
+    
+    #convert fips to integer type
+    counties_df = counties_df.astype({'fips': 'int64'})
+    
+    #import populations
+    populations_df = pd.read_csv(f"{homedir}/data/us/demographics/county_populations.csv")
+    populations_df.rename(columns={'FIPS': 'fips'}, inplace = True)
+    
+    #import education levels
+    education_df = pd.read_csv(f"{homedir}/data/us/demographics/education.csv")
+    education_df = education_df[['FIPS', 'Percent of adults with less than a high school diploma, 2014-18', 
+                                 'Percent of adults with a high school diploma only, 2014-18', 
+                                 'Percent of adults completing some college or associate\'s degree, 2014-18', 
+                                 'Percent of adults with a bachelor\'s degree or higher, 2014-18']]
+    education_df.rename(columns={'FIPS': 'fips'}, inplace = True)
+    
+    #import mobility_df
+    mobility_df = pd.read_csv(f"{homedir}/data/us/mobility/DL-us-mobility-daterow.csv")
+    mobility_df = mobility_df[mobility_df['country_code'] == 'US']
+    mobility_df['date'] = pd.to_datetime(mobility_df['date'])
+    
+    #merge population/education with original counties data
+    counties_df = counties_df.merge(populations_df, how = 'left', on = 'fips')
+    counties_df = counties_df.merge(education_df, how = 'left', on = 'fips')
+    counties_df = counties_df.merge(mobility_df, how = 'left', on = ['fips', 'date'])
+    
+    #mobility data is not as often, so merging it creates a lot of NaN values on days where there is no mobility data. here we are filling with zeros but this is a good candidate for moving averages
+    counties_df['m50'] = counties_df['m50'].fillna(0)
+    counties_df['m50_index'] = counties_df['m50_index'].fillna(0)
+    counties_df['samples'] = counties_df['samples'].fillna(0)
+    counties_df = counties_df.drop(['country_code', 'admin_level', 'admin1', 'admin2'], axis = 1)
+
 
     return counties_df
 
@@ -68,7 +100,23 @@ def inverse_minmax(scaled_x, min_x, max_x):
 # TODO: YIKES HE'S BIG. eventually should be split into multiple functions
 # so that we can easily add more datasets. Should hypothetically be able
 # to take any number of dfs
-def generate_county_sets(counties_df, split_point=40):
+
+def generate_date_range(counties_df, dateshift=35):
+    '''
+    Returns range of dates from min date to max date, excluding the first dateshift days
+    '''
+    # so here the first 35 days are like all 0 so i shifted the data we're
+    # interested in back by 35 days but dateshift can be any number of days
+    dr = pd.date_range(min(counties_df['date'] + datetime.timedelta(days = dateshift)),
+                              max(counties_df['date'])).tolist() #range of dates 
+    return dr
+
+
+def generate_split_point(daterange, frac = 0.8):
+    return(int(frac * len(daterange)))
+
+
+def generate_county_sets(counties_df, daterange, split_point=40):
     #initialize lists
     inputs_total = []
     conditions_total = []
@@ -81,27 +129,29 @@ def generate_county_sets(counties_df, split_point=40):
     test_targets = []
     test_conditions = []
 
-    fips = set(np.array(counties_df['fips'])) #list of unique fips
+    fips = list(set(np.array(counties_df['fips']))) #list of unique fips
 
-    # so here the first 35 days are like all 0 so i shifted the data we're
-    # interested in back by 35 days
-    dateshift = 35 
-    daterange = pd.date_range(min(counties_df['date'] + datetime.timedelta(days = dateshift)),
-                              max(counties_df['date'])).tolist() #range of dates 
-
+    
     fips_fewcases = [] #store fips of cases that are too few to model
     fips_manycases = [] #store fips of cases that we are modeling with RNN
-
-    for i in fips: #iterate through counties 
+    
+    for z in range(len(fips)): #iterate through counties 
+        i = fips[z]
+        
+        if z % 250 == 0:
+            print('FIPS processed: ' + str(z) + '/' + str(len(fips)) )
+            
         c_df = counties_df[counties_df['fips'] == i] #county specific dataframe
             
         if max(c_df['deaths']) <= 2: #don't do anything if there are too few cases 
             fips_fewcases.append(i)
         
         elif max(c_df['deaths']) > 2:
+            fips_manycases.append(i)
             
             x1 = np.zeros(len(daterange)) #x1 stores cases
             x2 = np.zeros(len(daterange)) #x2 stores deaths
+            x3 = np.zeros(len(daterange)) #x3 stores mobility(m50)
 
             c_daterange = c_df['date'].tolist() #daterange for this specific counties
 
@@ -110,21 +160,32 @@ def generate_county_sets(counties_df, split_point=40):
                     #if there is data for the county for this date, populate x1 and x2
                     x1[j] = c_df[c_df['date'] == daterange[j]]['cases'].values[0]
                     x2[j] = c_df[c_df['date'] == daterange[j]]['deaths'].values[0]
+                    x3[j] = c_df[c_df['date'] == daterange[j]]['m50'].values[0]
 
             days = np.arange(0, len(x1)) #range of days... to indicate progression of disease?
             
             plt.plot(days, x2) #plot deaths
             
-            x = np.stack((piecewise_log(x1), piecewise_log(x2), days), axis = 1) #construct input data
+            x = np.stack((piecewise_log(x1), piecewise_log(x2), days, x3), axis = 1) #construct input data
             
             x_train = x[:split_point] #split into training and testing
             x_test = x[split_point:]
             
             inputs_total.append(x)
             
-            #construct conditions... one hot encoded states
-            p = counties_df[counties_df['fips'] == i]['states_encoded'].values[0]
-            conditions_total.append(np.array(p))
+            #construct conditions... one hot encoded states, population, and education demographics
+            state = counties_df[counties_df['fips'] == i]['states_encoded'].values[0]
+            pop = counties_df[counties_df['fips'] == i]['total_pop'].values[0]
+            pop60 = counties_df[counties_df['fips'] == i]['60plus'].values[0]
+
+            edu1 = counties_df[counties_df['fips'] == i]['Percent of adults with less than a high school diploma, 2014-18'].values[0]
+            edu2 = counties_df[counties_df['fips'] == i]['Percent of adults with a high school diploma only, 2014-18'].values[0]
+            edu3 = counties_df[counties_df['fips'] == i]['Percent of adults completing some college or associate\'s degree, 2014-18'].values[0]
+            edu4 = counties_df[counties_df['fips'] == i]['Percent of adults with a bachelor\'s degree or higher, 2014-18'].values[0]
+
+            cond_list = state + [np.log(pop), np.log(pop60), edu1/100, edu2/100, edu3/100, edu4/100]
+
+            conditions_total.append(np.array(cond_list))
             
             #break up into little batch thingies
             data_gen_train = TimeseriesGenerator(x_train, x_train,
@@ -148,7 +209,7 @@ def generate_county_sets(counties_df, split_point=40):
                     train_targets.append(y_batch)
 
                     #conditions   
-                    train_conditions.append(np.array(p))
+                    train_conditions.append(np.array(cond_list))
             
             #construct test data
             for k in range(len(data_gen_test)):
@@ -163,7 +224,7 @@ def generate_county_sets(counties_df, split_point=40):
                     test_targets.append(y_batch)
 
                     #conditions   
-                    test_conditions.append(np.array(p))
+                    test_conditions.append(np.array(cond_list))
 
     plt.title('Deaths over time in each county')
     plt.figure()
@@ -181,7 +242,7 @@ def generate_county_sets(counties_df, split_point=40):
     conditions_total = np.array(conditions_total)
 
     return train_inputs, train_targets, train_conditions, test_inputs, \
-        test_targets, test_conditions, inputs_total, conditions_total
+        test_targets, test_conditions, inputs_total, conditions_total, fips_manycases
 
 
 #############
@@ -196,7 +257,7 @@ class MySimpleModel(tf.keras.Model):
         self.cond = ConditionalRNN(20, cell='LSTM', dtype=tf.float32, return_sequences=True)
         self.cond2 = ConditionalRNN(12, cell='LSTM', dtype=tf.float32)
     
-        self.out = tf.keras.layers.Dense(units=3)
+        self.out = tf.keras.layers.Dense(units=4)
 
     def call(self, inputs, **kwargs):
         x, cond = inputs
@@ -210,13 +271,13 @@ model = MySimpleModel()  # TODO fix import to notebook issue
 
 
 def train_rnn(model, train_inputs, train_targets, train_conditions, test_inputs,
-        test_targets, test_conditions):
+        test_targets, test_conditions, ep = 20):
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.01)
     model.call([train_inputs, train_conditions])
     model.compile(optimizer=optimizer, loss='mean_squared_error')
     history = model.fit(x=[train_inputs, train_conditions], y= train_targets, 
             validation_data=([test_inputs, test_conditions], test_targets),
-            epochs=20)
+            epochs=ep)
     print('Evaluating model:')
     model.evaluate([test_inputs, test_conditions], test_targets)
 
@@ -241,7 +302,7 @@ def plot_hist(model, train_inputs, train_conditions):
     plt.show() 
 
 
-def generate_predictions(model, inputs_total, conditions_total, T=18, k=40):
+def generate_predictions_county_level(model, inputs_total, conditions_total, T, k): #k is index of county fips in total list
     inputs = inputs_total[k]
     conditions = conditions_total
 
@@ -251,7 +312,7 @@ def generate_predictions(model, inputs_total, conditions_total, T=18, k=40):
 
     print('Generating predictions:')
     for i in range(T):
-
+        
         y_predict = model.predict([[inputs], [conditions[k, :]]])
         inputs = np.append(inputs, np.array(y_predict), axis = 0)
         prediction = np.append(prediction, [y_predict], axis = 0)
@@ -259,13 +320,14 @@ def generate_predictions(model, inputs_total, conditions_total, T=18, k=40):
     return inputs, prediction
 
 
-def plot_predicted_vs_true(model, inputs_total, conditions_total, T=18, ind=40,
-        split_point=40):
-    I, P = generate_predictions(model, inputs_total[:, :split_point, :],
+def plot_predicted_vs_true(model, inputs_total, conditions_total, fips, split_point, T, ind=40):
+    I, P = generate_predictions_county_level(model, inputs_total[:, :split_point, :],
             conditions_total, T, ind)
 
     plt.plot(range(len(I)), I[:, 1], label = 'predicted value')
-    plt.plot(range(split_point - 1, len(I)), inputs_total[ind, split_point - 1:, 1],
+    endpt = min([len(I), inputs_total.shape[1]])
+    plt.plot(range(split_point - 1, endpt), inputs_total[ind, split_point - 1:endpt, 1],
             label = 'true value')
     plt.legend()
+    plt.title(str(fips[ind]))
     plt.show()
