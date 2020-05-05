@@ -85,7 +85,8 @@ def minmax_scaler(x):
 
 
 def piecewise_log(arr):
-    arr[arr == 0] = 1
+    arr[arr <= 0] = 1
+    assert np.all(arr >= 0)
     return np.log(arr)
 
 
@@ -96,7 +97,23 @@ def inverse_minmax(scaled_x, min_x, max_x):
         unscaled_x = scaled_x * (max_x - min_x) + min_x
         return unscaled_x, min_x, max_x
 
-
+def moving_avg(data, n):
+    data_size = len(data)
+    avg = np.zeros(data_size)
+    moving_sum = 0;
+    # for the first  n-1 points, just copy the data over to the
+    # moving avg list
+    for i in range(n-1):
+        avg[i] = data[i]
+        moving_sum += data[i] / n
+    # for the rest of the points sum over the previous n data points
+    #  (including current data point)
+    for i in range(n-1, len(data)):
+        moving_sum += data[i] / n
+        avg[i] = moving_sum
+        moving_sum -= data[i - (n-1)] / n
+    return avg
+    
 # TODO: YIKES HE'S BIG. eventually should be split into multiple functions
 # so that we can easily add more datasets. Should hypothetically be able
 # to take any number of dfs
@@ -143,10 +160,10 @@ def generate_county_sets(counties_df, daterange, split_point=40):
             
         c_df = counties_df[counties_df['fips'] == i] #county specific dataframe
             
-        if max(c_df['deaths']) <= 2: #don't do anything if there are too few cases 
+        if max(c_df['deaths']) <= 4: #don't do anything if there are too few cases 
             fips_fewcases.append(i)
         
-        elif max(c_df['deaths']) > 2:
+        elif max(c_df['deaths']) > 4:
             fips_manycases.append(i)
             
             x1 = np.zeros(len(daterange)) #x1 stores cases
@@ -163,15 +180,20 @@ def generate_county_sets(counties_df, daterange, split_point=40):
                     x3[j] = c_df[c_df['date'] == daterange[j]]['m50'].values[0]
 
             days = np.arange(0, len(x1)) #range of days... to indicate progression of disease?
+          
+            true_values = np.stack((piecewise_log(x1), piecewise_log(x2), x3), axis = 1) #construct input data            
+            inputs_total.append(true_values)
             
-            plt.plot(days, x2) #plot deaths
+            x1 = moving_avg(x1, 3)
+            x2 = moving_avg(x2, 3)
             
-            x = np.stack((piecewise_log(x1), piecewise_log(x2), days, x3), axis = 1) #construct input data
+            x3 = moving_avg(x3, 5)
+            plt.plot(days, x3) #plot deaths
+            
+            x = np.stack((piecewise_log(x1), piecewise_log(x2), x3), axis = 1) #construct input data
             
             x_train = x[:split_point] #split into training and testing
             x_test = x[split_point:]
-            
-            inputs_total.append(x)
             
             #construct conditions... one hot encoded states, population, and education demographics
             state = counties_df[counties_df['fips'] == i]['states_encoded'].values[0]
@@ -189,11 +211,11 @@ def generate_county_sets(counties_df, daterange, split_point=40):
             
             #break up into little batch thingies
             data_gen_train = TimeseriesGenerator(x_train, x_train,
-                                           length=10, sampling_rate=1,
+                                           length=12, sampling_rate=1,
                                            batch_size=2)
             
             data_gen_test = TimeseriesGenerator(x_test, x_test,
-                                           length=10, sampling_rate=1,
+                                           length=12, sampling_rate=1,
                                            batch_size=2)
 
             #construct training data
@@ -257,7 +279,7 @@ class MySimpleModel(tf.keras.Model):
         self.cond = ConditionalRNN(20, cell='LSTM', dtype=tf.float32, return_sequences=True)
         self.cond2 = ConditionalRNN(12, cell='LSTM', dtype=tf.float32)
     
-        self.out = tf.keras.layers.Dense(units=4)
+        self.out = tf.keras.layers.Dense(units=3)
 
     def call(self, inputs, **kwargs):
         x, cond = inputs
@@ -319,15 +341,21 @@ def generate_predictions_county_level(model, inputs_total, conditions_total, T, 
 
     return inputs, prediction
 
+def get_county_name(counties_df, fips_many, ind):
+    county_title = counties_df[counties_df['fips'] == fips_many[ind]]['county'].values[0]
+    return(county_title)
 
-def plot_predicted_vs_true(model, inputs_total, conditions_total, fips, split_point, T, ind=40):
+def plot_predicted_vs_true(model, inputs_total, conditions_total, counties_df, fips, split_point, T, ind=40):
     I, P = generate_predictions_county_level(model, inputs_total[:, :split_point, :],
             conditions_total, T, ind)
-
+    
     plt.plot(range(len(I)), I[:, 1], label = 'predicted value')
     endpt = min([len(I), inputs_total.shape[1]])
     plt.plot(range(split_point - 1, endpt), inputs_total[ind, split_point - 1:endpt, 1],
             label = 'true value')
     plt.legend()
-    plt.title(str(fips[ind]))
+    
+    county_title = get_county_name(counties_df, fips, ind)
+    
+    plt.title(str(fips[ind]) + ' ' + county_title)
     plt.show()
