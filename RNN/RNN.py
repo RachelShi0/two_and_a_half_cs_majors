@@ -10,6 +10,8 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense
 from tensorflow.keras.layers import LSTM
 
+from tensorflow import convert_to_tensor
+
 from sklearn.preprocessing import OneHotEncoder
 from tensorflow.keras.preprocessing.sequence import TimeseriesGenerator
 
@@ -22,6 +24,7 @@ homedir = repo.working_dir
 ##########################
 
 def load_county_data(path):
+    print('hello')
     # Import daily covid cases per county
     counties_df = pd.read_csv(f"{homedir}/" + path)
     counties_df = counties_df[counties_df['state'].notna()] # drop rows where state is NaN value
@@ -321,26 +324,35 @@ def plot_hist(model, train_inputs, train_conditions):
     plt.hist(y[:, 0])
     plt.title('Histogram of predicted value from training data')
     plt.show() 
+    
+    
+def append_results(inputs, predictions):
+    final_inputs = []
+    n = inputs.shape[0]
+    for i in range(n):        
+        final_in = np.append(inputs[i], [predictions[i]], axis = 0)
+        final_inputs.append(final_in)
+    return np.array(final_inputs)
 
 
 def generate_predictions_county_level(model, inputs_total, conditions_total, T, k_list): #k is index of county fips in total list
     inputs = inputs_total[k_list, :, :]
     conditions = conditions_total[k_list, :]
-
-    y_predict = model.predict([[inputs], [conditions]])
+    
+    y_predict = model.predict([inputs, conditions])
     prediction = np.array([y_predict])
-    inputs = np.append(inputs, np.array(y_predict), axis = 0)
-
+    
+    inputs = append_results(inputs, y_predict)
+    
     print('Generating predictions:')
     for i in range(T):
-        
-        y_predict = model.predict([[inputs], [conditions]])
-        inputs = np.append(inputs, np.array(y_predict), axis = 0)
-        prediction = np.append(prediction, [y_predict], axis = 0)
+        y_predict = model.predict([convert_to_tensor(inputs), convert_to_tensor(conditions)])
+        inputs = append_results(inputs, y_predict)
+        prediction = append_results(prediction, y_predict)
 
     return inputs, prediction
 
-def get_county_name(counties_df, fips_many, k_list):
+def get_county_name(counties_df, fips_many, ind):
     county_title = counties_df[counties_df['fips'] == fips_many[ind]]['county'].values[0]
     return(county_title)
 
@@ -348,14 +360,15 @@ def plot_predicted_vs_true(model, inputs_total, conditions_total, counties_df, f
     I, P = generate_predictions_county_level(model, inputs_total[:, :split_point, :],
             conditions_total, T, k_list)
     
-    for k in k_list:
-        plt.plot(range(len(I[k])), I[k, :, 1], label = 'predicted value')
-        endpt = min([len(I[k]), inputs_total.shape[2]])
-        plt.plot(range(split_point - 1, endpt), inputs_total[k, split_point - 1:endpt, 1],
+    for i in range(len(k_list)):
+        k = k_list[i]
+        plt.plot(range(len(I[i])), I[i, :, 1], label = 'predicted value')
+        endpt = min([len(I[i]), inputs_total.shape[1]])
+        plt.plot(range(split_point - 1, endpt), inputs_total[k, (split_point - 1):endpt, 1],
                 label = 'true value')
+        print(inputs_total[i, (split_point - 1):endpt, 1])
         plt.legend()
-
         county_title = get_county_name(counties_df, fips, k)
 
-        plt.title(str(fips[k]) + ' ' + county_title)
+        plt.title(str(fips[i]) + ' ' + county_title)
         plt.figure()
