@@ -186,9 +186,8 @@ def generate_county_sets(counties_df, daterange, split_point=40):
             
             x1 = moving_avg(x1, 3)
             x2 = moving_avg(x2, 3)
-            
             x3 = moving_avg(x3, 5)
-            plt.plot(days, x3) #plot deaths
+            plt.plot(days, x2) #plot deaths
             
             x = np.stack((piecewise_log(x1), piecewise_log(x2), x3), axis = 1) #construct input data
             
@@ -324,38 +323,39 @@ def plot_hist(model, train_inputs, train_conditions):
     plt.show() 
 
 
-def generate_predictions_county_level(model, inputs_total, conditions_total, T, k): #k is index of county fips in total list
-    inputs = inputs_total[k]
-    conditions = conditions_total
+def generate_predictions_county_level(model, inputs_total, conditions_total, T, k_list): #k is index of county fips in total list
+    inputs = inputs_total[k_list, :, :]
+    conditions = conditions_total[k_list, :]
 
-    y_predict = model.predict([[inputs], [conditions[k, :]]])
+    y_predict = model.predict([[inputs], [conditions]])
     prediction = np.array([y_predict])
     inputs = np.append(inputs, np.array(y_predict), axis = 0)
 
     print('Generating predictions:')
     for i in range(T):
         
-        y_predict = model.predict([[inputs], [conditions[k, :]]])
+        y_predict = model.predict([[inputs], [conditions]])
         inputs = np.append(inputs, np.array(y_predict), axis = 0)
         prediction = np.append(prediction, [y_predict], axis = 0)
 
     return inputs, prediction
 
-def get_county_name(counties_df, fips_many, ind):
+def get_county_name(counties_df, fips_many, k_list):
     county_title = counties_df[counties_df['fips'] == fips_many[ind]]['county'].values[0]
     return(county_title)
 
-def plot_predicted_vs_true(model, inputs_total, conditions_total, counties_df, fips, split_point, T, ind=40):
+def plot_predicted_vs_true(model, inputs_total, conditions_total, counties_df, fips, split_point, T, k_list):
     I, P = generate_predictions_county_level(model, inputs_total[:, :split_point, :],
-            conditions_total, T, ind)
+            conditions_total, T, k_list)
     
-    plt.plot(range(len(I)), I[:, 1], label = 'predicted value')
-    endpt = min([len(I), inputs_total.shape[1]])
-    plt.plot(range(split_point - 1, endpt), inputs_total[ind, split_point - 1:endpt, 1],
-            label = 'true value')
-    plt.legend()
-    
-    county_title = get_county_name(counties_df, fips, ind)
-    
-    plt.title(str(fips[ind]) + ' ' + county_title)
-    plt.show()
+    for k in k_list:
+        plt.plot(range(len(I[k])), I[k, :, 1], label = 'predicted value')
+        endpt = min([len(I[k]), inputs_total.shape[2]])
+        plt.plot(range(split_point - 1, endpt), inputs_total[k, split_point - 1:endpt, 1],
+                label = 'true value')
+        plt.legend()
+
+        county_title = get_county_name(counties_df, fips, k)
+
+        plt.title(str(fips[k]) + ' ' + county_title)
+        plt.figure()
