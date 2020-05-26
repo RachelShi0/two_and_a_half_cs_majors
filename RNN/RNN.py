@@ -24,7 +24,6 @@ homedir = repo.working_dir
 ##########################
 
 def load_county_data(path):
-    print('hello')
     # Import daily covid cases per county
     counties_df = pd.read_csv(f"{homedir}/" + path)
     counties_df = counties_df[counties_df['state'].notna()] # drop rows where state is NaN value
@@ -206,7 +205,8 @@ def generate_county_sets(counties_df, daterange, split_point=40):
             edu2 = counties_df[counties_df['fips'] == i]['Percent of adults with a high school diploma only, 2014-18'].values[0]
             edu3 = counties_df[counties_df['fips'] == i]['Percent of adults completing some college or associate\'s degree, 2014-18'].values[0]
             edu4 = counties_df[counties_df['fips'] == i]['Percent of adults with a bachelor\'s degree or higher, 2014-18'].values[0]
-
+            
+            
             cond_list = state + [np.log(pop), np.log(pop60), edu1/100, edu2/100, edu3/100, edu4/100]
 
             conditions_total.append(np.array(cond_list))
@@ -250,7 +250,7 @@ def generate_county_sets(counties_df, daterange, split_point=40):
                     #conditions   
                     test_conditions.append(np.array(cond_list))
 
-    plt.title('Deaths over time in each county')
+    plt.title('Deaths over time in each county (moving averages)')
     plt.figure()
                     
     # make things into arrays
@@ -266,7 +266,7 @@ def generate_county_sets(counties_df, daterange, split_point=40):
     conditions_total = np.array(conditions_total)
 
     return train_inputs, train_targets, train_conditions, test_inputs, \
-        test_targets, test_conditions, inputs_total, conditions_total, fips_manycases
+        test_targets, test_conditions, inputs_total, conditions_total, fips_manycases, fips_fewcases
 
 
 #############
@@ -339,18 +339,15 @@ def generate_predictions_county_level(model, inputs_total, conditions_total, T, 
     inputs = inputs_total[k_list, :, :]
     conditions = conditions_total[k_list, :]
     
-    y_predict = model.predict([inputs, conditions])
-    prediction = np.array([y_predict])
-    
+    y_predict = model.predict([inputs, conditions])    
     inputs = append_results(inputs, y_predict)
     
     print('Generating predictions:')
     for i in range(T):
         y_predict = model.predict([convert_to_tensor(inputs), convert_to_tensor(conditions)])
         inputs = append_results(inputs, y_predict)
-        prediction = append_results(prediction, y_predict)
 
-    return inputs, prediction
+    return inputs, inputs[:, -T:, :]
 
 def get_county_name(counties_df, fips_many, ind):
     county_title = counties_df[counties_df['fips'] == fips_many[ind]]['county'].values[0]
