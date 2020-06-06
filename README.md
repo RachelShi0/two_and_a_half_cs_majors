@@ -1,5 +1,7 @@
 # Caltech COVID-19 Prediction
 
+RNN is located at `RNN/RNN_US_minimal.ipynb` for reference.
+
 ## Overview
 This repository contains all of the code generated during our efforts to
 understand and model the COVID-19 outbreak. Organized by the
